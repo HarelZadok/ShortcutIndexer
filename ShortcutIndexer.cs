@@ -104,12 +104,12 @@ namespace ShortcutIndexer
                 {
                     dc = m.WParam;
                 }
-                var rgn = CreateRectRgn(innerInnerBorder.Left, innerInnerBorder.Top, 
+                var rgn = CreateRectRgn(innerInnerBorder.Left, innerInnerBorder.Top,
                     innerInnerBorder.Right, innerInnerBorder.Bottom);
                 SelectClipRgn(dc, rgn);
                 DefWndProc(ref m);
                 DeleteObject(rgn);
-                rgn = CreateRectRgn(clientRect.Left, clientRect.Top, 
+                rgn = CreateRectRgn(clientRect.Left, clientRect.Top,
                     clientRect.Right, clientRect.Bottom);
                 SelectClipRgn(dc, rgn);
                 using (var g = Graphics.FromHdc(dc))
@@ -127,7 +127,7 @@ namespace ShortcutIndexer
                         g.DrawRectangle(p, innerBorder);
                         g.DrawRectangle(p, innerInnerBorder);
                     }
-                                        using (var p = new Pen(outerBorderColor))
+                    using (var p = new Pen(outerBorderColor))
                     {
                         g.DrawRectangle(p, outerBorder);
                     }
@@ -214,7 +214,24 @@ namespace ShortcutIndexer
         private Color _accentColor;
         private bool _isDarkTheme;
 
+        // Store custom location path
+        private string _customLocationPath = null;
+
         public string TargetFile { get; set; }
+
+        // Windows API for dark title bar
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        public static extern int DwmSetWindowAttribute(IntPtr hwnd, uint attr, ref int attrValue, int attrSize);
+
+        [DllImport("User32.dll", CharSet = CharSet.Auto)]
+        public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("User32.dll")]
+        private static extern IntPtr GetWindowDC(IntPtr hWnd);
+
+        private const uint DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+        private const uint DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        private const int WM_NCPAINT = 0x85;
 
         public MainForm(string targetFile = null)
         {
@@ -222,6 +239,130 @@ namespace ShortcutIndexer
             DetectAndApplyTheme();
             InitializeComponent();
             LoadDefaultValues();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+
+            if (m.Msg == WM_NCPAINT && _isDarkTheme)
+            {
+                IntPtr hdc = GetWindowDC(m.HWnd);
+                if (hdc != IntPtr.Zero)
+                {
+                    Graphics g = Graphics.FromHdc(hdc);
+
+                    // Paint the title bar with dark color
+                    using (var brush = new SolidBrush(Color.FromArgb(45, 45, 45)))
+                    {
+                        // Title bar height is typically around 30-32 pixels
+                        g.FillRectangle(brush, new Rectangle(0, 0, this.Width, 32));
+                    }
+
+                    // Paint the title text
+                    using (var textBrush = new SolidBrush(Color.White))
+                    using (var font = new Font("Segoe UI", 9F))
+                    {
+                        var titleRect = new Rectangle(8, 6, this.Width - 150, 20);
+                        g.DrawString(this.Text, font, textBrush, titleRect);
+                    }
+
+                    g.Flush();
+                    ReleaseDC(m.HWnd, hdc);
+                    g.Dispose();
+                }
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+
+            if (_isDarkTheme)
+            {
+                ApplyDarkTitleBar();
+            }
+        }
+
+        private void ApplyDarkTitleBar()
+        {
+            if (Environment.OSVersion.Version.Major >= 10 && this.Handle != IntPtr.Zero)
+            {
+                var attribute = DWMWA_USE_IMMERSIVE_DARK_MODE;
+
+                // Use older attribute for Windows 10 versions before 20H1
+                if (Environment.OSVersion.Version.Build < 18985)
+                {
+                    attribute = DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1;
+                }
+
+                int useImmersiveDarkMode = 1;
+                DwmSetWindowAttribute(this.Handle, attribute, ref useImmersiveDarkMode, sizeof(int));
+            }
+        }
+
+        private bool IsRunningAsAdministrator()
+        {
+            try
+            {
+                using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                {
+                    WindowsPrincipal principal = new WindowsPrincipal(identity);
+                    return principal.IsInRole(WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool RequiresAdminPrivileges(int locationIndex)
+        {
+            // All Users locations require admin privileges
+            if (locationIndex == 1 || locationIndex == 3 || locationIndex == 5)
+                return true;
+
+            // Custom location - check if the selected path requires admin privileges
+            if (locationIndex == 6 && !string.IsNullOrEmpty(_customLocationPath))
+            {
+                return RequiresAdminForPath(_customLocationPath);
+            }
+
+            return false;
+        }
+
+        private bool RequiresAdminForPath(string path)
+        {
+            try
+            {
+                // Try to create a temporary file in the directory to test write permissions
+                string testFile = Path.Combine(path, Path.GetRandomFileName());
+                File.WriteAllText(testFile, "test");
+                File.Delete(testFile);
+                return false; // No admin required
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true; // Admin required
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Directory doesn't exist, try to create it
+                try
+                {
+                    Directory.CreateDirectory(path);
+                    return false;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                return false; // Other errors, assume no admin required
+            }
         }
 
         private void DetectAndApplyTheme()
@@ -501,11 +642,54 @@ namespace ShortcutIndexer
                 return;
             }
 
+            // Handle custom location selection
+            if (cmbLocation.SelectedIndex == 6 && string.IsNullOrEmpty(_customLocationPath))
+            {
+                using (var folderDialog = new FolderBrowserDialog())
+                {
+                    folderDialog.Description = "Select destination folder";
+                    if (folderDialog.ShowDialog() == DialogResult.OK)
+                    {
+                        _customLocationPath = folderDialog.SelectedPath;
+                    }
+                    else
+                    {
+                        return; // User cancelled
+                    }
+                }
+            }
+
+            // Check if admin privileges are required
+            if (RequiresAdminPrivileges(cmbLocation.SelectedIndex) && !IsRunningAsAdministrator())
+            {
+                var result = MessageBox.Show(
+                    "Creating shortcuts in this location requires administrator privileges.\n\n" +
+                    "Would you like to create the shortcut with elevated privileges?",
+                    "Administrator Privileges Required",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+
+                if (result == DialogResult.Yes)
+                {
+                    CreateShortcutWithElevation();
+                }
+                return;
+            }
+
             try
             {
                 CreateShortcut();
                 MessageBox.Show("Shortcut created successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.Close();
+            }
+            catch (UnauthorizedAccessException)
+            {
+                MessageBox.Show(
+                    "Access denied. You may need administrator privileges to create shortcuts in this location.\n\n" +
+                    "Try running the application as administrator or choose a different location.",
+                    "Access Denied",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
             }
             catch (Exception ex)
             {
@@ -516,6 +700,130 @@ namespace ShortcutIndexer
         private void BtnCancel_Click(object sender, EventArgs e)
         {
             this.Close();
+        }
+
+        private void CreateShortcutWithElevation()
+        {
+            try
+            {
+                // Create a temporary script file to execute with elevation
+                string tempScriptPath = Path.GetTempFileName() + ".ps1";
+                string shortcutPath = GetShortcutPathForElevation();
+
+                // Build PowerShell script to create the shortcut
+                string script = @"
+$WshShell = New-Object -comObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut('" + shortcutPath + @"')
+$Shortcut.TargetPath = '" + txtTargetPath.Text.Replace("'", "''") + @"'
+$Shortcut.Arguments = '" + txtArguments.Text.Replace("'", "''") + @"'
+$Shortcut.WorkingDirectory = '" + cmbStartIn.Text.Replace("'", "''") + @"'
+$Shortcut.WindowStyle = " + GetWindowStyleValue() + @"
+$Shortcut.Save()
+
+" + (chkRunAsAdmin.Checked ? GetRunAsAdminScript(shortcutPath) : "") + @"
+
+Write-Host 'Shortcut created successfully!'
+";
+
+                File.WriteAllText(tempScriptPath, script);
+
+                // Execute PowerShell with elevation
+                var startInfo = new ProcessStartInfo()
+                {
+                    FileName = "powershell.exe",
+                    Arguments = "-ExecutionPolicy Bypass -File \"" + tempScriptPath + "\"",
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                using (var process = Process.Start(startInfo))
+                {
+                    process.WaitForExit();
+
+                    if (process.ExitCode == 0)
+                    {
+                        MessageBox.Show("Shortcut created successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        this.Close();
+                    }
+                    else
+                    {
+                        MessageBox.Show("Failed to create shortcut with elevated privileges.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+
+                // Clean up temporary script
+                try { File.Delete(tempScriptPath); } catch { }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Failed to create shortcut with elevation: " + ex.Message, "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private string GetShortcutPathForElevation()
+        {
+            string shortcutName = txtShortcutName.Text;
+            if (!shortcutName.EndsWith(".lnk"))
+                shortcutName += ".lnk";
+
+            string basePath;
+            switch (cmbLocation.SelectedIndex)
+            {
+                case 0: // Start Menu (Current User)
+                    basePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "ShortcutIndexer");
+                    break;
+                case 1: // Start Menu (All Users)
+                    basePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "ShortcutIndexer");
+                    break;
+                case 2: // Startup (Current User)
+                    basePath = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
+                    break;
+                case 3: // Startup (All Users)
+                    basePath = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup);
+                    break;
+                case 4: // Desktop (Current User)
+                    basePath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                    break;
+                case 5: // Desktop (All Users)
+                    basePath = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
+                    break;
+                case 6: // Custom Location
+                    basePath = _customLocationPath ?? Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                    break;
+                default:
+                    basePath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                    break;
+            }
+
+            return Path.Combine(basePath, shortcutName).Replace("'", "''");
+        }
+
+        private int GetWindowStyleValue()
+        {
+            switch (cmbRunAs.SelectedIndex)
+            {
+                case 0: return 1; // Normal
+                case 1: return 7; // Minimized
+                case 2: return 3; // Maximized
+                default: return 1;
+            }
+        }
+
+        private string GetRunAsAdminScript(string shortcutPath)
+        {
+            return @"
+# Set Run as Administrator flag
+$bytes = [System.IO.File]::ReadAllBytes('" + shortcutPath + @"')
+if ($bytes.Length -gt 21) {
+    $linkFlags = [System.BitConverter]::ToInt32($bytes, 20)
+    $linkFlags = $linkFlags -bor 0x00002000
+    $flagBytes = [System.BitConverter]::GetBytes($linkFlags)
+    [System.Array]::Copy($flagBytes, 0, $bytes, 20, 4)
+    [System.IO.File]::WriteAllBytes('" + shortcutPath + @"', $bytes)
+}
+";
         }
 
         private void CreateShortcut()
@@ -579,17 +887,25 @@ namespace ShortcutIndexer
                     basePath = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
                     break;
                 case 6: // Custom Location
-                    using (var folderDialog = new FolderBrowserDialog())
+                    if (string.IsNullOrEmpty(_customLocationPath))
                     {
-                        folderDialog.Description = "Select destination folder";
-                        if (folderDialog.ShowDialog() == DialogResult.OK)
+                        using (var folderDialog = new FolderBrowserDialog())
                         {
-                            basePath = folderDialog.SelectedPath;
+                            folderDialog.Description = "Select destination folder";
+                            if (folderDialog.ShowDialog() == DialogResult.OK)
+                            {
+                                basePath = folderDialog.SelectedPath;
+                                _customLocationPath = basePath;
+                            }
+                            else
+                            {
+                                throw new OperationCanceledException("No destination folder selected.");
+                            }
                         }
-                        else
-                        {
-                            throw new OperationCanceledException("No destination folder selected.");
-                        }
+                    }
+                    else
+                    {
+                        basePath = _customLocationPath;
                     }
                     break;
                 default:
@@ -682,7 +998,7 @@ namespace ShortcutIndexer
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            
+
             string targetFile = args.Length > 0 ? args[0] : null;
             Application.Run(new MainForm(targetFile));
         }
