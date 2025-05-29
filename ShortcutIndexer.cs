@@ -6,30 +6,266 @@ using System.Diagnostics;
 using System.Security.Principal;
 using Microsoft.Win32;
 using System.Runtime.InteropServices;
+using System.ComponentModel;
 
 namespace ShortcutIndexer
 {
+    class ColoredCombo : ComboBox
+    {
+        private static bool IsWindowsDarkTheme()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    var value = key.GetValue("AppsUseLightTheme");
+                    if (value is int)
+                    {
+                        return (int)value == 0; // 0 = dark theme, 1 = light theme
+                    }
+                }
+            }
+            catch
+            {
+                // Fall back to light theme if unable to detect
+            }
+            return false;
+        }
+
+        private Color borderColor = IsWindowsDarkTheme() ? Color.Gray : Color.LightGray;
+        public Color BorderColor
+        {
+            get { return borderColor; }
+            set
+            {
+                if (borderColor != value)
+                {
+                    borderColor = value;
+                    Invalidate();
+                }
+            }
+        }
+
+        private Color buttonColor = IsWindowsDarkTheme() ? Color.FromArgb(45, 45, 45) : Color.Transparent;
+        public Color ButtonColor
+        {
+            get { return buttonColor; }
+            set
+            {
+                if (buttonColor != value)
+                {
+                    buttonColor = value;
+                    Invalidate();
+                }
+            }
+        }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_PAINT && DropDownStyle != ComboBoxStyle.Simple)
+            {
+                var clientRect = ClientRectangle;
+                var dropDownButtonWidth = SystemInformation.HorizontalScrollBarArrowWidth;
+                var outerBorder = new Rectangle(clientRect.Location,
+                    new Size(clientRect.Width - 1, clientRect.Height - 1));
+                var innerBorder = new Rectangle(outerBorder.X + 1, outerBorder.Y + 1,
+                    outerBorder.Width - dropDownButtonWidth - 2, outerBorder.Height - 2);
+                var innerInnerBorder = new Rectangle(innerBorder.X + 1, innerBorder.Y + 1,
+                    innerBorder.Width - 2, innerBorder.Height - 2);
+                var dropDownRect = new Rectangle(innerBorder.Right + 1, innerBorder.Y,
+                    dropDownButtonWidth, innerBorder.Height + 1);
+                if (RightToLeft == RightToLeft.Yes)
+                {
+                    innerBorder.X = clientRect.Width - innerBorder.Right;
+                    innerInnerBorder.X = clientRect.Width - innerInnerBorder.Right;
+                    dropDownRect.X = clientRect.Width - dropDownRect.Right;
+                    dropDownRect.Width += 1;
+                }
+                var innerBorderColor = Enabled ? BackColor : SystemColors.Control;
+                var outerBorderColor = Enabled ? BorderColor : SystemColors.ControlDark;
+                var buttonColor = Enabled ? ButtonColor : SystemColors.Control;
+                var middle = new Point(dropDownRect.Left + dropDownRect.Width / 2,
+                    dropDownRect.Top + dropDownRect.Height / 2);
+                var arrow = new Point[]
+                {
+                    new Point(middle.X - 3, middle.Y - 2),
+                    new Point(middle.X + 4, middle.Y - 2),
+                    new Point(middle.X, middle.Y + 2)
+                };
+                var ps = new PAINTSTRUCT();
+                bool shoulEndPaint = false;
+                IntPtr dc;
+                if (m.WParam == IntPtr.Zero)
+                {
+                    dc = BeginPaint(Handle, ref ps);
+                    m.WParam = dc;
+                    shoulEndPaint = true;
+                }
+                else
+                {
+                    dc = m.WParam;
+                }
+                var rgn = CreateRectRgn(innerInnerBorder.Left, innerInnerBorder.Top, 
+                    innerInnerBorder.Right, innerInnerBorder.Bottom);
+                SelectClipRgn(dc, rgn);
+                DefWndProc(ref m);
+                DeleteObject(rgn);
+                rgn = CreateRectRgn(clientRect.Left, clientRect.Top, 
+                    clientRect.Right, clientRect.Bottom);
+                SelectClipRgn(dc, rgn);
+                using (var g = Graphics.FromHdc(dc))
+                {
+                    using (var b = new SolidBrush(buttonColor))
+                    {
+                        g.FillRectangle(b, dropDownRect);
+                    }
+                    using (var b = new SolidBrush(outerBorderColor))
+                    {
+                        g.FillPolygon(b, arrow);
+                    }
+                    using (var p = new Pen(innerBorderColor))
+                    {
+                        g.DrawRectangle(p, innerBorder);
+                        g.DrawRectangle(p, innerInnerBorder);
+                    }
+                                        using (var p = new Pen(outerBorderColor))
+                    {
+                        g.DrawRectangle(p, outerBorder);
+                    }
+                }
+                if (shoulEndPaint)
+                    EndPaint(Handle, ref ps);
+                DeleteObject(rgn);
+            }
+            else
+                base.WndProc(ref m);
+        }
+
+        private const int WM_PAINT = 0xF;
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT
+        {
+            public int L, T, R, B;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PAINTSTRUCT
+        {
+            public IntPtr hdc;
+            public bool fErase;
+            public int rcPaint_left;
+            public int rcPaint_top;
+            public int rcPaint_right;
+            public int rcPaint_bottom;
+            public bool fRestore;
+            public bool fIncUpdate;
+            public int reserved1;
+            public int reserved2;
+            public int reserved3;
+            public int reserved4;
+            public int reserved5;
+            public int reserved6;
+            public int reserved7;
+            public int reserved8;
+        }
+        [DllImport("user32.dll")]
+        private static extern IntPtr BeginPaint(IntPtr hWnd,
+            [In, Out] ref PAINTSTRUCT lpPaint);
+
+        [DllImport("user32.dll")]
+        private static extern bool EndPaint(IntPtr hWnd, ref PAINTSTRUCT lpPaint);
+
+        [DllImport("gdi32.dll")]
+        public static extern int SelectClipRgn(IntPtr hDC, IntPtr hRgn);
+
+        [DllImport("user32.dll")]
+        public static extern int GetUpdateRgn(IntPtr hwnd, IntPtr hrgn, bool fErase);
+        public enum RegionFlags
+        {
+            ERROR = 0,
+            NULLREGION = 1,
+            SIMPLEREGION = 2,
+            COMPLEXREGION = 3,
+        }
+        [DllImport("gdi32.dll")]
+        internal static extern bool DeleteObject(IntPtr hObject);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
+    }
+
     public partial class MainForm : Form
     {
         private TextBox txtShortcutName;
-        private ComboBox cmbLocation;
+        private ColoredCombo cmbLocation;
         private TextBox txtTargetPath;
         private TextBox txtArguments;
-        private ComboBox cmbStartIn;
-        private ComboBox cmbRunAs;
+        private ColoredCombo cmbStartIn;
+        private ColoredCombo cmbRunAs;
         private Button btnCreate;
         private Button btnCancel;
         private Button btnBrowseTarget;
         private CheckBox chkRunAsAdmin;
         private Label lblIcon;
 
+        // Theme colors
+        private Color _backgroundColor;
+        private Color _foregroundColor;
+        private Color _controlBackgroundColor;
+        private Color _buttonBackgroundColor;
+        private Color _accentColor;
+        private bool _isDarkTheme;
+
         public string TargetFile { get; set; }
 
         public MainForm(string targetFile = null)
         {
             TargetFile = targetFile;
+            DetectAndApplyTheme();
             InitializeComponent();
             LoadDefaultValues();
+        }
+
+        private void DetectAndApplyTheme()
+        {
+            _isDarkTheme = IsWindowsDarkTheme();
+
+            if (_isDarkTheme)
+            {
+                // Dark theme colors
+                _backgroundColor = Color.FromArgb(32, 32, 32);
+                _foregroundColor = Color.White;
+                _controlBackgroundColor = Color.FromArgb(45, 45, 45);
+                _buttonBackgroundColor = Color.FromArgb(55, 55, 55);
+                _accentColor = Color.FromArgb(0, 120, 215);
+            }
+            else
+            {
+                // Light theme colors
+                _backgroundColor = Color.White;
+                _foregroundColor = Color.Black;
+                _controlBackgroundColor = Color.White;
+                _buttonBackgroundColor = Color.FromArgb(240, 240, 240);
+                _accentColor = Color.FromArgb(0, 120, 215);
+            }
+        }
+
+        private bool IsWindowsDarkTheme()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    var value = key.GetValue("AppsUseLightTheme");
+                    if (value is int)
+                    {
+                        return (int)value == 0; // 0 = dark theme, 1 = light theme
+                    }
+                }
+            }
+            catch
+            {
+                // Fall back to light theme if unable to detect
+            }
+            return false;
         }
 
         private void InitializeComponent()
@@ -40,7 +276,8 @@ namespace ShortcutIndexer
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
-            this.BackColor = Color.White;
+            this.BackColor = _backgroundColor;
+            this.ForeColor = _foregroundColor;
 
             // Modern Windows 11 styling
             this.Font = new Font("Segoe UI", 9F);
@@ -50,11 +287,13 @@ namespace ShortcutIndexer
             lblName.Text = "Shortcut Name:";
             lblName.Location = new Point(20, 20);
             lblName.Size = new Size(100, 23);
+            lblName.ForeColor = _foregroundColor;
             this.Controls.Add(lblName);
 
             txtShortcutName = new TextBox();
             txtShortcutName.Location = new Point(130, 20);
             txtShortcutName.Size = new Size(320, 23);
+            ApplyTextBoxTheme(txtShortcutName);
             this.Controls.Add(txtShortcutName);
 
             // Start In
@@ -62,12 +301,14 @@ namespace ShortcutIndexer
             lblStartIn.Text = "Start In:";
             lblStartIn.Location = new Point(20, 60);
             lblStartIn.Size = new Size(100, 23);
+            lblStartIn.ForeColor = _foregroundColor;
             this.Controls.Add(lblStartIn);
 
-            cmbStartIn = new ComboBox();
+            cmbStartIn = new ColoredCombo();
             cmbStartIn.Location = new Point(130, 60);
             cmbStartIn.Size = new Size(320, 23);
             cmbStartIn.DropDownStyle = ComboBoxStyle.DropDown;
+            ApplyComboBoxTheme(cmbStartIn);
             this.Controls.Add(cmbStartIn);
 
             // Target Path
@@ -75,12 +316,14 @@ namespace ShortcutIndexer
             lblTarget.Text = "Target:";
             lblTarget.Location = new Point(20, 100);
             lblTarget.Size = new Size(100, 23);
+            lblTarget.ForeColor = _foregroundColor;
             this.Controls.Add(lblTarget);
 
             txtTargetPath = new TextBox();
             txtTargetPath.Location = new Point(130, 100);
             txtTargetPath.Size = new Size(270, 23);
             txtTargetPath.ReadOnly = true;
+            ApplyTextBoxTheme(txtTargetPath);
             this.Controls.Add(txtTargetPath);
 
             btnBrowseTarget = new Button();
@@ -88,6 +331,7 @@ namespace ShortcutIndexer
             btnBrowseTarget.Location = new Point(410, 100);
             btnBrowseTarget.Size = new Size(40, 23);
             btnBrowseTarget.Click += BtnBrowseTarget_Click;
+            ApplyButtonTheme(btnBrowseTarget, false);
             this.Controls.Add(btnBrowseTarget);
 
             // Arguments
@@ -95,11 +339,13 @@ namespace ShortcutIndexer
             lblArgs.Text = "Arguments:";
             lblArgs.Location = new Point(20, 140);
             lblArgs.Size = new Size(100, 23);
+            lblArgs.ForeColor = _foregroundColor;
             this.Controls.Add(lblArgs);
 
             txtArguments = new TextBox();
             txtArguments.Location = new Point(130, 140);
             txtArguments.Size = new Size(320, 23);
+            ApplyTextBoxTheme(txtArguments);
             this.Controls.Add(txtArguments);
 
             // Location
@@ -107,9 +353,10 @@ namespace ShortcutIndexer
             lblLocation.Text = "Location:";
             lblLocation.Location = new Point(20, 180);
             lblLocation.Size = new Size(100, 23);
+            lblLocation.ForeColor = _foregroundColor;
             this.Controls.Add(lblLocation);
 
-            cmbLocation = new ComboBox();
+            cmbLocation = new ColoredCombo();
             cmbLocation.Location = new Point(130, 180);
             cmbLocation.Size = new Size(320, 23);
             cmbLocation.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -121,6 +368,7 @@ namespace ShortcutIndexer
             cmbLocation.Items.Add("Desktop (All Users)");
             cmbLocation.Items.Add("Custom Location...");
             cmbLocation.SelectedIndex = 0;
+            ApplyComboBoxTheme(cmbLocation);
             this.Controls.Add(cmbLocation);
 
             // Run As
@@ -128,9 +376,10 @@ namespace ShortcutIndexer
             lblRunAs.Text = "Run As:";
             lblRunAs.Location = new Point(20, 220);
             lblRunAs.Size = new Size(100, 23);
+            lblRunAs.ForeColor = _foregroundColor;
             this.Controls.Add(lblRunAs);
 
-            cmbRunAs = new ComboBox();
+            cmbRunAs = new ColoredCombo();
             cmbRunAs.Location = new Point(130, 220);
             cmbRunAs.Size = new Size(320, 23);
             cmbRunAs.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -138,6 +387,7 @@ namespace ShortcutIndexer
             cmbRunAs.Items.Add("Minimized");
             cmbRunAs.Items.Add("Maximized");
             cmbRunAs.SelectedIndex = 0;
+            ApplyComboBoxTheme(cmbRunAs);
             this.Controls.Add(cmbRunAs);
 
             // Run as Administrator checkbox
@@ -146,6 +396,8 @@ namespace ShortcutIndexer
             chkRunAsAdmin.Location = new Point(20, 285);
             chkRunAsAdmin.Size = new Size(150, 20);
             chkRunAsAdmin.Font = new Font("Segoe UI", 9F);
+            chkRunAsAdmin.ForeColor = _foregroundColor;
+            chkRunAsAdmin.BackColor = _backgroundColor;
             this.Controls.Add(chkRunAsAdmin);
 
             // Buttons
@@ -153,20 +405,54 @@ namespace ShortcutIndexer
             btnCreate.Text = "Create Shortcut";
             btnCreate.Location = new Point(280, 280);
             btnCreate.Size = new Size(100, 30);
-            btnCreate.BackColor = Color.FromArgb(0, 120, 215);
-            btnCreate.ForeColor = Color.White;
-            btnCreate.FlatStyle = FlatStyle.Flat;
-            btnCreate.FlatAppearance.BorderSize = 0;
             btnCreate.Click += BtnCreate_Click;
+            ApplyButtonTheme(btnCreate, true);
             this.Controls.Add(btnCreate);
 
             btnCancel = new Button();
             btnCancel.Text = "Cancel";
             btnCancel.Location = new Point(390, 280);
             btnCancel.Size = new Size(80, 30);
-            btnCancel.FlatStyle = FlatStyle.Flat;
             btnCancel.Click += BtnCancel_Click;
+            ApplyButtonTheme(btnCancel, false);
             this.Controls.Add(btnCancel);
+        }
+
+        private void ApplyTextBoxTheme(TextBox textBox)
+        {
+            textBox.BackColor = _controlBackgroundColor;
+            textBox.ForeColor = _foregroundColor;
+            if (_isDarkTheme)
+            {
+                textBox.BorderStyle = BorderStyle.FixedSingle;
+            }
+        }
+
+        private void ApplyComboBoxTheme(ComboBox comboBox)
+        {
+            comboBox.BackColor = _controlBackgroundColor;
+            comboBox.ForeColor = _foregroundColor;
+            comboBox.FlatStyle = FlatStyle.Flat;
+        }
+
+        private void ApplyButtonTheme(Button button, bool isPrimary)
+        {
+            if (isPrimary)
+            {
+                button.BackColor = _accentColor;
+                button.ForeColor = Color.White;
+            }
+            else
+            {
+                button.BackColor = _buttonBackgroundColor;
+                button.ForeColor = _foregroundColor;
+            }
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderSize = _isDarkTheme ? 1 : 0;
+            if (_isDarkTheme && !isPrimary)
+            {
+                button.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 70);
+            }
         }
 
         private void LoadDefaultValues()
@@ -185,7 +471,7 @@ namespace ShortcutIndexer
             {
                 openFileDialog.Filter = "All Files (*.*)|*.*";
                 openFileDialog.Title = "Select Target File";
-                
+
                 if (openFileDialog.ShowDialog() == DialogResult.OK)
                 {
                     txtTargetPath.Text = openFileDialog.FileName;
@@ -220,7 +506,8 @@ namespace ShortcutIndexer
                 CreateShortcut();
                 MessageBox.Show("Shortcut created successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.Close();
-            }            catch (Exception ex)
+            }
+            catch (Exception ex)
             {
                 MessageBox.Show("Error creating shortcut: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -234,16 +521,16 @@ namespace ShortcutIndexer
         private void CreateShortcut()
         {
             string shortcutPath = GetShortcutPath();
-            
+
             // Create the shortcut using IWshRuntimeLibrary
             Type shellType = Type.GetTypeFromProgID("WScript.Shell");
             dynamic shell = Activator.CreateInstance(shellType);
             var shortcut = shell.CreateShortcut(shortcutPath);
-            
+
             shortcut.TargetPath = txtTargetPath.Text;
             shortcut.Arguments = txtArguments.Text;
             shortcut.WorkingDirectory = cmbStartIn.Text;
-            
+
             // Set window style based on selection
             switch (cmbRunAs.SelectedIndex)
             {
@@ -251,15 +538,15 @@ namespace ShortcutIndexer
                 case 1: shortcut.WindowStyle = 7; break; // Minimized
                 case 2: shortcut.WindowStyle = 3; break; // Maximized
             }
-            
+
             shortcut.Save();
-            
+
             // Set "Run as administrator" property if checkbox is checked
             if (chkRunAsAdmin.Checked)
             {
                 SetShortcutRunAsAdmin(shortcutPath);
             }
-            
+
             // Update Windows Search Index
             UpdateSearchIndex(shortcutPath);
         }
@@ -341,7 +628,7 @@ namespace ShortcutIndexer
         {
             // Notify Windows that a new file has been created
             SHChangeNotify(0x00002000, 0x0000, IntPtr.Zero, IntPtr.Zero); // SHCNE_ASSOCCHANGED
-            
+
             // Force a refresh of the search index
             try
             {
@@ -359,7 +646,7 @@ namespace ShortcutIndexer
             {
                 // Read the shortcut file and modify its properties
                 byte[] shortcutBytes = File.ReadAllBytes(shortcutPath);
-                
+
                 // Set the "Run as Administrator" flag by modifying the shortcut file
                 // This sets the SLDF_RUNAS_USER flag in the LinkFlags field
                 if (shortcutBytes.Length > 21)
@@ -370,7 +657,7 @@ namespace ShortcutIndexer
                     linkFlags |= 0x00002000; // Set the SLDF_RUNAS_USER flag
                     byte[] flagBytes = BitConverter.GetBytes(linkFlags);
                     Array.Copy(flagBytes, 0, shortcutBytes, 20, 4);
-                    
+
                     // Write the modified bytes back to the file
                     File.WriteAllBytes(shortcutPath, shortcutBytes);
                 }
@@ -379,10 +666,10 @@ namespace ShortcutIndexer
             {
                 // If direct file modification fails, show a warning but don't fail completely
                 MessageBox.Show(
-                    "Shortcut created successfully, but couldn't set 'Run as administrator' property: " + ex.Message + 
-                    "\n\nYou can manually set this by right-clicking the shortcut, selecting Properties, clicking Advanced, and checking 'Run as administrator'.", 
-                    "Warning", 
-                    MessageBoxButtons.OK, 
+                    "Shortcut created successfully, but couldn't set 'Run as administrator' property: " + ex.Message +
+                    "\n\nYou can manually set this by right-clicking the shortcut, selecting Properties, clicking Advanced, and checking 'Run as administrator'.",
+                    "Warning",
+                    MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
         }
