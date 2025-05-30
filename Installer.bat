@@ -94,25 +94,24 @@ copy "%~dp0Uninstaller.bat" "%INSTALL_DIR%\Uninstall.bat" >nul
 if %errorLevel% neq 0 (
     echo ERROR: Failed to create uninstaller.
 ) else (
-    :: Add to Windows Add/Remove Programs
-    echo Adding to Add/Remove Programs...
-    reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "DisplayName" /t REG_SZ /d "ShortcutIndexer" /f >nul
-    reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "UninstallString" /t REG_SZ /d "\"%INSTALL_DIR%\Uninstall.bat\"" /f >nul
-    reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "DisplayVersion" /t REG_SZ /d "1.10" /f >nul
-    reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "Publisher" /t REG_SZ /d "ShortcutIndexer" /f >nul
-    reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "InstallLocation" /t REG_SZ /d "%INSTALL_DIR%" /f >nul
+    :: Check if -noappwiz argument is present
+    echo %* | findstr /i "\-noappwiz" >nul
+    if %errorLevel% neq 0 (
+        :: Add to Windows Add/Remove Programs (only if -noappwiz is NOT present)
+        echo Adding to Add/Remove Programs...
+        reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "DisplayName" /t REG_SZ /d "ShortcutIndexer" /f >nul
+        reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "UninstallString" /t REG_SZ /d "\"%INSTALL_DIR%\Uninstall.bat\"" /f >nul
+        reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "DisplayVersion" /t REG_SZ /d "1.10" /f >nul
+        reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "Publisher" /t REG_SZ /d "ShortcutIndexer" /f >nul
+        reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShortcutIndexer" /v "InstallLocation" /t REG_SZ /d "%INSTALL_DIR%" /f >nul
+    ) else (
+        echo Skipping Add/Remove Programs registration (-noappwiz specified)...
+    )
 )
 
 :: Clean up temporary files
 echo Cleaning up temporary files...
 rmdir /s /q "%TEMP_BUILD%" 2>nul
-
-:: Restart Explorer to apply context menu changes
-echo.
-echo Restarting Windows Explorer to apply changes...
-taskkill /f /im explorer.exe >nul 2>&1
-timeout /t 2 /nobreak >nul
-start explorer.exe
 
 echo.
 echo ==========================================
